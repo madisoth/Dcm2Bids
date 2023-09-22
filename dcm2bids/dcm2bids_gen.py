@@ -5,6 +5,7 @@ Reorganising NIfTI files from dcm2niix into the Brain Imaging Data Structure
 """
 
 import logging
+import multiprocessing
 import os
 from pathlib import Path
 from glob import glob
@@ -14,7 +15,6 @@ from dcm2bids.sidecar import Sidecar, SidecarPairing
 from dcm2bids.participant import Participant
 from dcm2bids.utils.utils import DEFAULT, run_shell_command
 from dcm2bids.utils.io import load_json, save_json, valid_path
-
 
 class Dcm2BidsGen(object):
     """ Object to handle dcm2bids execution steps
@@ -73,6 +73,63 @@ class Dcm2BidsGen(object):
 
         self._dicom_dirs = valid_dirs
 
+
+    def move_acquisition(self, acquisition, idList, post_op):
+        """Move an acquisition to BIDS format"""
+        for srcFile in glob(acquisition.srcRoot + ".*"):
+            ext = Path(srcFile).suffixes
+            ext = [curr_ext for curr_ext in ext if curr_ext in ['.nii', '.gz',
+                                                                '.json',
+                                                                '.bval', '.bvec']]
+
+            dstFile = (self.bids_dir / acquisition.dstRoot).with_suffix("".join(ext))
+
+            dstFile.parent.mkdir(parents=True, exist_ok=True)
+            
+            has_post_op = False
+
+            # checking if destination file exists
+            if dstFile.exists():
+                self.logger.info(f"'{dstFile}' already exists")
+
+                if self.clobber:
+                    self.logger.info("Overwriting because of --clobber option")
+
+                else:
+                    self.logger.info("Use --clobber option to overwrite")
+                    continue
+
+            # Populate idList
+            if '.nii' in ext:
+                if acquisition.id in idList:
+                    idList[acquisition.id].append(os.path.join(acquisition.participant.name,
+                                                               acquisition.dstId + "".join(ext)))
+                else:
+                    idList[acquisition.id] = [os.path.join(acquisition.participant.name,
+                                                           acquisition.dstId + "".join(ext))]
+
+                for curr_post_op in post_op:
+                    if acquisition.datatype in curr_post_op['datatype'] or 'any' in curr_post_op['datatype']:
+                        if acquisition.suffix in curr_post_op['suffix'] or '_any' in curr_post_op['suffix']:
+                            has_post_op = True
+                            cmd = curr_post_op['cmd'].replace('src_file', str(srcFile))
+                            cmd = cmd.replace('dst_file', str(dstFile))
+                            run_shell_command(cmd.split())
+                            continue
+                if not has_post_op:
+                    os.rename(srcFile, dstFile)                    
+
+            elif ".json" in ext:
+                data = acquisition.dstSidecarData(idList)
+                save_json(dstFile, data)
+                os.remove(srcFile)
+
+            # just move
+            else:
+                os.rename(srcFile, dstFile)
+
+        return idList
+
     def run(self):
         """Run dcm2bids"""
         dcm2niix = Dcm2niixGen(
@@ -116,9 +173,22 @@ class Dcm2BidsGen(object):
                                 f"BIDS folder \"{output_dir}\" won't be created. "
                                 "Check your config file.\n".upper())
 
-        idList = {}
+        # Create a pool of worker processes (adjust the number of processes as needed)
+        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+
+        idList = {}  # Initialize idList here if needed
+
+        # Run the 'move_acquisition' function in parallel for each acquisition
+        results = []
         for acq in parser.acquisitions:
-            idList = self.move(acq, idList, parser.post_op)
+            result = pool.apply_async(self.move_acquisition, (acq, idList, parser.post_op))
+            results.append(result)
+
+        # Close the pool and wait for all processes to complete
+        pool.close()
+        pool.join()
+
+        # Continue with the rest of your script after all processes have completed
 
         if self.bids_validate:
             try:
@@ -132,53 +202,5 @@ class Dcm2BidsGen(object):
                                   "computer. Please check: "
                                   "https://github.com/bids-standard/bids-validator.")
 
-    def move(self, acquisition, idList, post_op):
-        """Move an acquisition to BIDS format"""
-        for srcFile in glob(acquisition.srcRoot + ".*"):
-            ext = Path(srcFile).suffixes
-            ext = [curr_ext for curr_ext in ext if curr_ext in ['.nii', '.gz',
-                                                                '.json',
-                                                                '.bval', '.bvec']]
 
-            dstFile = (self.bids_dir / acquisition.dstRoot).with_suffix("".join(ext))
 
-            dstFile.parent.mkdir(parents=True, exist_ok=True)
-
-            # checking if destination file exists
-            if dstFile.exists():
-                self.logger.info(f"'{dstFile}' already exists")
-
-                if self.clobber:
-                    self.logger.info("Overwriting because of --clobber option")
-
-                else:
-                    self.logger.info("Use --clobber option to overwrite")
-                    continue
-
-            # Populate idList
-            if '.nii' in ext:
-                if acquisition.id in idList:
-                    idList[acquisition.id].append(os.path.join(acquisition.participant.name,
-                                                               acquisition.dstId + "".join(ext)))
-                else:
-                    idList[acquisition.id] = [os.path.join(acquisition.participant.name,
-                                                           acquisition.dstId + "".join(ext))]
-
-                for curr_post_op in post_op:
-                    if acquisition.datatype in curr_post_op['datatype'] or 'any' in curr_post_op['datatype']:
-                        if acquisition.suffix in curr_post_op['suffix'] or '_any' in curr_post_op['suffix']:
-                            cmd = curr_post_op['cmd'].replace('src_file', str(srcFile))
-                            cmd = cmd.replace('dst_file', str(dstFile))
-                            run_shell_command(cmd.split())
-                            continue
-
-            if ".json" in ext:
-                data = acquisition.dstSidecarData(idList)
-                save_json(dstFile, data)
-                os.remove(srcFile)
-
-            # just move
-            else:
-                os.rename(srcFile, dstFile)
-
-        return idList

@@ -4,7 +4,7 @@
 _version_major = 3
 _version_minor = 0
 _version_micro = 2
-_version_extra = ''
+_version_extra = 'mp'
 
 # Construct full version string from these.
 _ver = [_version_major, _version_minor]
