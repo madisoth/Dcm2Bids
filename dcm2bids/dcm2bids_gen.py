@@ -7,6 +7,7 @@ Reorganising NIfTI files from dcm2niix into the Brain Imaging Data Structure
 import logging
 import multiprocessing
 import os
+import shutil
 from pathlib import Path
 from glob import glob
 
@@ -122,11 +123,12 @@ class Dcm2BidsGen(object):
             elif ".json" in ext:
                 data = acquisition.dstSidecarData(idList)
                 save_json(dstFile, data)
-                os.remove(srcFile)
+                # os.remove(srcFile)
 
             # just move
             else:
-                os.rename(srcFile, dstFile)
+                shutil.copy(srcFile, dstFile)
+                # os.move(srcFile, dstFile)
 
         return idList
 
